@@ -2,11 +2,11 @@
 
 echo "Starting server"
 python server.py &
-sleep 40  # Sleep for 3s to give the server enough time to start
+sleep 20  # Sleep for 3s to give the server enough time to start
 
-for i in `seq 0 3`; do
+for i in `seq 0 9`; do
     echo "Starting client $i"
-    python client.py --partition=${i} --clients=4 & 
+    python client.py --partition=${i} --clients=10 & 
 done
 
 # This will allow you to use CTRL+C to stop all background processes

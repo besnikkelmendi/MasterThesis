@@ -18,10 +18,10 @@ from sklearn.model_selection import train_test_split
 INPUT_SHAPE = 224, 224, 3
 
 def build_model(input_shape):
-    model = tf.keras.applications.DenseNet121((input_shape), classes=5, weights=None)
+    # model = tf.keras.applications.EfficientNetB3((input_shape), classes=5, weights=None)
     
-    # model = mobilenet(input_shape, 5)
-    # model = squeezenet(input_shape, 5)
+    model = squeezenet(input_shape, 5)
+    # model = mobilenet(input_shape, 5)s
     
     model.compile(
         loss='categorical_crossentropy',
@@ -107,6 +107,47 @@ def mobilenet(input_shape, n_classes):
   model = Model(input, output)
   return model
 
+
+def densenet(img_shape, n_classes, f=32):
+  repetitions = 6, 12, 24, 16
+  
+  def bn_rl_conv(x, f, k=1, s=1, p='same'):
+    x = BatchNormalization()(x)
+    x = ReLU()(x)
+    x = Conv2D(f, k, strides=s, padding=p)(x)
+    return x
+  
+  
+  def dense_block(tensor, r):
+    for _ in range(r):
+      x = bn_rl_conv(tensor, 4*f)
+      x = bn_rl_conv(x, f, 3)
+      tensor = Concatenate()([tensor, x])
+    return tensor
+  
+  
+  def transition_block(x):
+    x = bn_rl_conv(x, K.int_shape(x)[-1] // 2)
+    x = AvgPool2D(2, strides=2, padding='same')(x)
+    return x
+  
+  
+  input = Input(img_shape)
+  
+  x = Conv2D(64, 7, strides=2, padding='same')(input)
+  x = MaxPool2D(3, strides=2, padding='same')(x)
+  
+  for r in repetitions:
+    d = dense_block(x, r)
+    x = transition_block(d)
+  
+  x = GlobalAvgPool2D()(d)
+  
+  output = Dense(n_classes, activation='softmax')(x)
+  
+  model = Model(input, output)
+  return model
+
 def preprocess_image(image_path, desired_size=224):
     im = Image.open(image_path)
     # im = im.resize((desired_size, )*2, resample=Image.LANCZOS)
@@ -127,10 +168,10 @@ def main() -> None:
     # Create strategy
     strategy = fl.server.strategy.FedAvg(
         fraction_fit=0.5, #0.3
-        fraction_eval=0.5, #0.2
-        min_fit_clients=2,
-        min_eval_clients=2,
-        min_available_clients=4, #10
+        fraction_eval=0.3, #0.2
+        min_fit_clients=5,
+        min_eval_clients=3,
+        min_available_clients=5, #10
         eval_fn=get_eval_fn(model),
         on_fit_config_fn=fit_config,
         on_evaluate_config_fn=evaluate_config,
@@ -138,7 +179,7 @@ def main() -> None:
     )
 
     # Start Flower server for four rounds of federated learning
-    fl.server.start_server("localhost:8080", config={"num_rounds": 2}, strategy=strategy)
+    fl.server.start_server("localhost:8086", config={"num_rounds": 100}, strategy=strategy)
 
 # 
     
@@ -187,7 +228,7 @@ def load_partition(train_df):
     idx = 1
     """Load 1/10th of the training and test data to simulate a partition."""
     N = train_df.shape[0]
-    train_df = train_df[:320]
+    train_df = train_df[-162:]
     N = train_df.shape[0]
     x_train = np.empty((N, 224, 224, 3), dtype=np.uint8)
 
@@ -218,6 +259,7 @@ def load_partition(train_df):
     # )
     
     return (x_train, y_train)
+    
 
 if __name__ == "__main__":
     main()

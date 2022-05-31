@@ -50,7 +50,6 @@ class CifarClient(fl.client.NumPyClient):
             self.y_train,
             batch_size,
             epochs,
-            validation_split=0.1,
         )
 
         # Return updated model parameters and results
@@ -59,8 +58,8 @@ class CifarClient(fl.client.NumPyClient):
         results = {
             "loss": history.history["loss"][0],
             "accuracy": history.history["accuracy"][0],
-            "val_loss": history.history["val_loss"][0],
-            "val_accuracy": history.history["val_accuracy"][0],
+            # "val_loss": history.history["val_loss"][0],
+            # "val_accuracy": history.history["val_accuracy"][0],
         }
         return parameters_prime, num_examples_train, results
 
@@ -74,7 +73,7 @@ class CifarClient(fl.client.NumPyClient):
         steps: int = config["val_steps"]
 
         # Evaluate global model parameters on the local test data and return results
-        loss, accuracy = self.model.evaluate(self.x_test, self.y_test, 32, steps=steps)
+        loss, accuracy = self.model.evaluate(self.x_test, self.y_test, 8, steps=steps)
         num_examples_test = len(self.x_test)
         return loss, num_examples_test, {"accuracy": accuracy}
 
@@ -96,19 +95,20 @@ def main() -> None:
 
     # Load a subset of CIFAR-10 to simulate the local data partition
     train_df = pd.read_csv('train-backup.csv')
-    test_df = pd.read_csv('test.csv')
+    # test_df = pd.read_csv('test.csv')
     
-    (x_train, y_train), (x_test, y_test) = load_partition(args.partition, args.clients, train_df)
+    (x_train, y_train), (x_test, y_test) = load_partition_non_iid(args.partition, args.clients, train_df)
 
     # Start Flower client
     client = CifarClient(model, x_train, y_train, x_test, y_test)
-    fl.client.start_numpy_client("localhost:8080", client=client)
+    fl.client.start_numpy_client("localhost:8086", client=client)
 
 def build_model(input_shape):
-    model = tf.keras.applications.DenseNet121((input_shape), classes=5, weights=None)
+    # model = tf.keras.applications.EfficientNetB3((input_shape), classes=5, weights=None)
     
-    # model = squeezenet(input_shape, 5)
+    model = squeezenet(input_shape, 5)
     
+
     model.compile(
         loss='categorical_crossentropy',
         optimizer='adam',
@@ -152,10 +152,88 @@ def squeezenet(input_shape, n_classes):
     model = Model(input, output)
     return model  
 
+def densenet(img_shape, n_classes, f=32):
+  repetitions = 6, 12, 24, 16
+  
+  def bn_rl_conv(x, f, k=1, s=1, p='same'):
+    x = BatchNormalization()(x)
+    x = ReLU()(x)
+    x = Conv2D(f, k, strides=s, padding=p)(x)
+    return x
+  
+  
+  def dense_block(tensor, r):
+    for _ in range(r):
+      x = bn_rl_conv(tensor, 4*f)
+      x = bn_rl_conv(x, f, 3)
+      tensor = Concatenate()([tensor, x])
+    return tensor
+  
+  
+  def transition_block(x):
+    x = bn_rl_conv(x, K.int_shape(x)[-1] // 2)
+    x = AvgPool2D(2, strides=2, padding='same')(x)
+    return x
+  
+  
+  input = Input(img_shape)
+  
+  x = Conv2D(64, 7, strides=2, padding='same')(input)
+  x = MaxPool2D(3, strides=2, padding='same')(x)
+  
+  for r in repetitions:
+    d = dense_block(x, r)
+    x = transition_block(d)
+  
+  x = GlobalAvgPool2D()(d)
+  
+  output = Dense(n_classes, activation='softmax')(x)
+  
+  model = Model(input, output)
+  return model
+
+def load_partition_non_iid(idx: int, clients ,train_df):
+    """Load 1/10th of the training and test data to simulate a partition."""
+    # N = train_df.shape[0]
+    # N = int(N/clients)
+     
+    from_sample = [0, 611, 752, 955, 1294, 1480, 2050, 2383, 2560, 3108] 
+    to_sample = [610, 751, 954, 1295, 1479, 2049, 2382, 2559, 3107, 3499]
+    # x_train = []
+    N = to_sample[idx] - from_sample[idx] 
+    x_train = np.empty((N, 224, 224, 3), dtype=np.uint8)
+    
+    train_partition = train_df[from_sample[idx] : to_sample[idx]] 
+    for i, image_id in enumerate(train_partition['id_code']):
+        # image_id = train_partition.loc[i,'id_code']
+        # print(image_id)
+        # img = cv2.imread(f'train_images_resized/{image_id}.png')
+        # x_train.append(img)
+        x_train[i, :, :, :] = preprocess_image(
+            f'train_images_resized/{image_id}.png'
+        )
+    
+    # x_train_cl = np.array(x_train, np.float32) / 255.0
+        
+    
+    
+    y = train_partition['diagnosis']
+    # y_train = y
+    y_train = tf.keras.utils.to_categorical(y, num_classes=5)
+    # print(y_train.shape)
+    
+    X_train, x_val, Y_train, y_val = train_test_split(
+        x_train, y_train, 
+        test_size=0.15, 
+        random_state=42
+    )
+    
+    return (X_train, Y_train),(x_val, y_val)    
+
 def load_partition(idx: int, clients ,train_df):
     """Load 1/10th of the training and test data to simulate a partition."""
     N = train_df.shape[0]
-    N = int(N/clients)
+    N = int(N/clients) - 10
     # x_train = []
     x_train = np.empty((N, 224, 224, 3), dtype=np.uint8)
     
